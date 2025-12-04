@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { ExternalLink, StickyNote } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -49,6 +50,48 @@ const strategicActions = [
   { value: "Ajustar Preço", label: "Ajustar Preço" },
   { value: "Ativar Ads", label: "Ativar Ads" },
 ];
+
+// Financial calculations (estimates based on available data)
+export const calculateFinancials = (product: Product) => {
+  const price = product.price || 0;
+  const sales = product.sales_last_30_days || 0;
+  const visits = product.visits_last_30_days || 0;
+  
+  // Revenue
+  const revenue = price * sales;
+  
+  // Estimated ad spend (assume R$0.50 per visit as average CPC)
+  const estimatedAdSpend = visits * 0.5;
+  
+  // ROAS = Revenue / Ad Spend
+  const roas = estimatedAdSpend > 0 ? revenue / estimatedAdSpend : 0;
+  
+  // Estimated margin (assume 30% product cost + 15% ML fees)
+  const productCost = price * 0.30;
+  const mlFees = price * 0.15;
+  const marginPerUnit = price - productCost - mlFees;
+  const totalMargin = marginPerUnit * sales - estimatedAdSpend;
+  const marginPercent = revenue > 0 ? (totalMargin / revenue) * 100 : 0;
+  
+  return {
+    revenue,
+    estimatedAdSpend,
+    roas,
+    totalMargin,
+    marginPercent,
+  };
+};
+
+// Get diagnosis based on financials
+export const getDiagnosis = (roas: number, marginPercent: number) => {
+  if (roas >= 3 && marginPercent >= 20) {
+    return { label: "Escalar", variant: "success" as const };
+  } else if (roas >= 1.5 && marginPercent >= 5) {
+    return { label: "Otimizar", variant: "warning" as const };
+  } else {
+    return { label: "Pausar", variant: "destructive" as const };
+  }
+};
 
 export default function ProductsTable({ products, loading, onUpdate }: ProductsTableProps) {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -90,7 +133,6 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
   };
 
   const handleRowClick = (product: Product, e: React.MouseEvent) => {
-    // Don't open modal if clicking on interactive elements
     const target = e.target as HTMLElement;
     if (target.closest('button') || target.closest('a') || target.closest('[role="combobox"]')) {
       return;
@@ -114,7 +156,6 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
     );
   }
 
-  // Group products by SKU
   const groupedProducts = products.reduce((acc, product) => {
     const sku = product.seller_sku || "sem-sku";
     if (!acc[sku]) acc[sku] = [];
@@ -139,9 +180,11 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
                 <TableHead>Título</TableHead>
                 <TableHead>SKU</TableHead>
                 <TableHead className="text-right">Preço</TableHead>
-                <TableHead className="text-right">Visitas</TableHead>
                 <TableHead className="text-right">Vendas</TableHead>
                 <TableHead className="text-right">Conversão</TableHead>
+                <TableHead className="text-right">ROAS</TableHead>
+                <TableHead className="text-right">Margem</TableHead>
+                <TableHead className="text-center">Diagnóstico</TableHead>
                 <TableHead>Ação</TableHead>
                 <TableHead className="w-[50px]"></TableHead>
               </TableRow>
@@ -153,6 +196,8 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
                     product.sales_last_30_days,
                     product.visits_last_30_days
                   );
+                  const financials = calculateFinancials(product);
+                  const diagnosis = getDiagnosis(financials.roas, financials.marginPercent);
                   const isFirst = idx === 0;
                   const showSku = isFirst || sku === "sem-sku";
 
@@ -175,7 +220,7 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
                         </div>
                       </TableCell>
                       <TableCell>
-                        <div className="max-w-[250px]">
+                        <div className="max-w-[200px]">
                           <p className="font-medium truncate" title={product.title}>
                             {product.title}
                           </p>
@@ -195,13 +240,37 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
                         R$ {product.price?.toFixed(2) || "0.00"}
                       </TableCell>
                       <TableCell className="text-right font-mono">
-                        {product.visits_last_30_days?.toLocaleString() || 0}
-                      </TableCell>
-                      <TableCell className="text-right font-mono">
                         {product.sales_last_30_days || 0}
                       </TableCell>
                       <TableCell className={cn("text-right font-mono", getConversionClass(conversion))}>
                         {conversion.toFixed(2)}%
+                      </TableCell>
+                      <TableCell className={cn(
+                        "text-right font-mono font-bold",
+                        financials.roas >= 3 ? "text-emerald-400" : 
+                        financials.roas >= 1.5 ? "text-amber-400" : "text-red-400"
+                      )}>
+                        {financials.roas.toFixed(1)}x
+                      </TableCell>
+                      <TableCell className={cn(
+                        "text-right font-mono font-bold",
+                        financials.marginPercent >= 20 ? "text-emerald-400" : 
+                        financials.marginPercent >= 5 ? "text-amber-400" : "text-red-400"
+                      )}>
+                        {financials.marginPercent.toFixed(1)}%
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Badge 
+                          variant="outline"
+                          className={cn(
+                            "text-xs font-semibold",
+                            diagnosis.variant === "success" && "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+                            diagnosis.variant === "warning" && "bg-amber-500/20 text-amber-400 border-amber-500/30",
+                            diagnosis.variant === "destructive" && "bg-red-500/20 text-red-400 border-red-500/30"
+                          )}
+                        >
+                          {diagnosis.label}
+                        </Badge>
                       </TableCell>
                       <TableCell>
                         <Select
@@ -209,7 +278,7 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
                           onValueChange={(value) => handleActionChange(product.id, value)}
                           disabled={updatingId === product.id}
                         >
-                          <SelectTrigger className="w-[140px] bg-background">
+                          <SelectTrigger className="w-[130px] bg-background">
                             <SelectValue placeholder="Selecionar..." />
                           </SelectTrigger>
                           <SelectContent className="bg-popover border-border">
@@ -253,6 +322,7 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
         product={selectedProduct}
         open={modalOpen}
         onOpenChange={setModalOpen}
+        onUpdate={onUpdate}
       />
     </>
   );
