@@ -18,7 +18,8 @@ import {
 import { ExternalLink, StickyNote } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { format, differenceInDays } from "date-fns";
+import { differenceInDays } from "date-fns";
+import ProductDetailModal from "./ProductDetailModal";
 
 interface Product {
   id: string;
@@ -51,6 +52,8 @@ const strategicActions = [
 
 export default function ProductsTable({ products, loading, onUpdate }: ProductsTableProps) {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
 
   const calculateConversion = (sales: number, visits: number) => {
     if (visits === 0) return 0;
@@ -86,6 +89,16 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
     }
   };
 
+  const handleRowClick = (product: Product, e: React.MouseEvent) => {
+    // Don't open modal if clicking on interactive elements
+    const target = e.target as HTMLElement;
+    if (target.closest('button') || target.closest('a') || target.closest('[role="combobox"]')) {
+      return;
+    }
+    setSelectedProduct(product);
+    setModalOpen(true);
+  };
+
   if (loading) {
     return (
       <div className="bg-card border border-border rounded-xl overflow-hidden">
@@ -110,124 +123,137 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
   }, {} as Record<string, Product[]>);
 
   return (
-    <div className="bg-card border border-border rounded-xl overflow-hidden animate-fade-in">
-      <div className="p-6 border-b border-border">
-        <h3 className="text-lg font-semibold">Análise de Anúncios</h3>
-        <p className="text-sm text-muted-foreground mt-1">
-          {products.length} produtos encontrados
-        </p>
-      </div>
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow className="hover:bg-transparent">
-              <TableHead className="w-[80px]">Imagem</TableHead>
-              <TableHead>Título</TableHead>
-              <TableHead>SKU</TableHead>
-              <TableHead className="text-right">Preço</TableHead>
-              <TableHead className="text-right">Visitas</TableHead>
-              <TableHead className="text-right">Vendas</TableHead>
-              <TableHead className="text-right">Conversão</TableHead>
-              <TableHead>Ação</TableHead>
-              <TableHead className="w-[50px]"></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {Object.entries(groupedProducts).map(([sku, skuProducts]) =>
-              skuProducts.map((product, idx) => {
-                const conversion = calculateConversion(
-                  product.sales_last_30_days,
-                  product.visits_last_30_days
-                );
-                const isFirst = idx === 0;
-                const showSku = isFirst || sku === "sem-sku";
+    <>
+      <div className="bg-card border border-border rounded-xl overflow-hidden animate-fade-in">
+        <div className="p-6 border-b border-border">
+          <h3 className="text-lg font-semibold">Análise de Anúncios</h3>
+          <p className="text-sm text-muted-foreground mt-1">
+            {products.length} produtos encontrados • Clique em uma linha para ver detalhes
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="w-[80px]">Imagem</TableHead>
+                <TableHead>Título</TableHead>
+                <TableHead>SKU</TableHead>
+                <TableHead className="text-right">Preço</TableHead>
+                <TableHead className="text-right">Visitas</TableHead>
+                <TableHead className="text-right">Vendas</TableHead>
+                <TableHead className="text-right">Conversão</TableHead>
+                <TableHead>Ação</TableHead>
+                <TableHead className="w-[50px]"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {Object.entries(groupedProducts).map(([sku, skuProducts]) =>
+                skuProducts.map((product, idx) => {
+                  const conversion = calculateConversion(
+                    product.sales_last_30_days,
+                    product.visits_last_30_days
+                  );
+                  const isFirst = idx === 0;
+                  const showSku = isFirst || sku === "sem-sku";
 
-                return (
-                  <TableRow key={product.id} className="table-row-hover">
-                    <TableCell>
-                      <div className="relative">
-                        <img
-                          src={product.thumbnail || "/placeholder.svg"}
-                          alt={product.title}
-                          className="w-12 h-12 object-cover rounded-lg border border-border"
-                        />
-                        {isNewProduct(product.date_created) && (
-                          <span className="badge-new absolute -top-1 -right-1">Novo</span>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="max-w-[250px]">
-                        <p className="font-medium truncate" title={product.title}>
-                          {product.title}
-                        </p>
-                        <p className="text-xs text-muted-foreground font-mono">
-                          {product.item_id}
-                        </p>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      {showSku && product.seller_sku && (
-                        <span className="px-2 py-1 bg-secondary rounded text-xs font-mono">
-                          {product.seller_sku}
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      R$ {product.price?.toFixed(2) || "0.00"}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      {product.visits_last_30_days?.toLocaleString() || 0}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      {product.sales_last_30_days || 0}
-                    </TableCell>
-                    <TableCell className={cn("text-right font-mono", getConversionClass(conversion))}>
-                      {conversion.toFixed(2)}%
-                    </TableCell>
-                    <TableCell>
-                      <Select
-                        value={product.strategic_action || ""}
-                        onValueChange={(value) => handleActionChange(product.id, value)}
-                        disabled={updatingId === product.id}
-                      >
-                        <SelectTrigger className="w-[140px] bg-background">
-                          <SelectValue placeholder="Selecionar..." />
-                        </SelectTrigger>
-                        <SelectContent className="bg-popover border-border">
-                          {strategicActions.map((action) => (
-                            <SelectItem key={action.value} value={action.value}>
-                              {action.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        {product.my_notes && (
-                          <span title={product.my_notes}>
-                            <StickyNote className="w-4 h-4 text-primary" />
+                  return (
+                    <TableRow
+                      key={product.id}
+                      className="table-row-hover cursor-pointer"
+                      onClick={(e) => handleRowClick(product, e)}
+                    >
+                      <TableCell>
+                        <div className="relative">
+                          <img
+                            src={product.thumbnail || "/placeholder.svg"}
+                            alt={product.title}
+                            className="w-12 h-12 object-cover rounded-lg border border-border"
+                          />
+                          {isNewProduct(product.date_created) && (
+                            <span className="badge-new absolute -top-1 -right-1">Novo</span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="max-w-[250px]">
+                          <p className="font-medium truncate" title={product.title}>
+                            {product.title}
+                          </p>
+                          <p className="text-xs text-muted-foreground font-mono">
+                            {product.item_id}
+                          </p>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {showSku && product.seller_sku && (
+                          <span className="px-2 py-1 bg-secondary rounded text-xs font-mono">
+                            {product.seller_sku}
                           </span>
                         )}
-                        <a
-                          href={product.permalink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-                          title="Ver no ML"
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        R$ {product.price?.toFixed(2) || "0.00"}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {product.visits_last_30_days?.toLocaleString() || 0}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {product.sales_last_30_days || 0}
+                      </TableCell>
+                      <TableCell className={cn("text-right font-mono", getConversionClass(conversion))}>
+                        {conversion.toFixed(2)}%
+                      </TableCell>
+                      <TableCell>
+                        <Select
+                          value={product.strategic_action || ""}
+                          onValueChange={(value) => handleActionChange(product.id, value)}
+                          disabled={updatingId === product.id}
                         >
-                          <ExternalLink className="w-4 h-4" />
-                        </a>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
+                          <SelectTrigger className="w-[140px] bg-background">
+                            <SelectValue placeholder="Selecionar..." />
+                          </SelectTrigger>
+                          <SelectContent className="bg-popover border-border">
+                            {strategicActions.map((action) => (
+                              <SelectItem key={action.value} value={action.value}>
+                                {action.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1">
+                          {product.my_notes && (
+                            <span title={product.my_notes}>
+                              <StickyNote className="w-4 h-4 text-primary" />
+                            </span>
+                          )}
+                          <a
+                            href={product.permalink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                            title="Ver no ML"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <ExternalLink className="w-4 h-4" />
+                          </a>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </div>
       </div>
-    </div>
+
+      <ProductDetailModal
+        product={selectedProduct}
+        open={modalOpen}
+        onOpenChange={setModalOpen}
+      />
+    </>
   );
 }
