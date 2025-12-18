@@ -36,20 +36,21 @@ serve(async (req) => {
       throw new Error("Invalid user token");
     }
 
-    const { action, code, redirectUri } = await req.json();
+    // ATUALIZAÇÃO: Adicionamos ids e accessToken na desestruturação
+    const { action, code, redirectUri, ids, accessToken } = await req.json();
     console.log(`ML Auth action: ${action}`);
 
+    // --- AÇÃO 1: LOGIN ---
     if (action === "login") {
-      // Generate OAuth URL
-      const authUrl = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${ML_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+      const authUrl = `https://auth.mercadolivre.com.br/authorization?response_type=code&client_id=${ML_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 
       return new Response(JSON.stringify({ authUrl }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
+    // --- AÇÃO 2: CALLBACK (Troca de token) ---
     if (action === "callback") {
-      // Exchange code for tokens
       console.log("Exchanging code for tokens...");
 
       const tokenResponse = await fetch("https://api.mercadolibre.com/oauth/token", {
@@ -98,7 +99,32 @@ serve(async (req) => {
       });
     }
 
+    // --- AÇÃO 3: CHECK ITEMS (A NOVA FUNCIONALIDADE PARA CORRIGIR O CORS) ---
+    if (action === "check_items") {
+        if (!ids || !accessToken) {
+            throw new Error("Missing required params: ids or accessToken");
+        }
+
+        // Fazemos a chamada aqui no servidor (Deno), onde não existe CORS
+        const mlResponse = await fetch(`https://api.mercadolibre.com/items?ids=${ids}`, {
+            method: "GET",
+            headers: {
+                "Authorization": `Bearer ${accessToken}`,
+                "Content-Type": "application/json"
+            }
+        });
+
+        const mlData = await mlResponse.json();
+
+        // Devolvemos a resposta do ML para o seu Frontend
+        return new Response(JSON.stringify(mlData), {
+            status: mlResponse.status,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+    }
+
     throw new Error("Invalid action");
+
   } catch (error: unknown) {
     console.error("ML Auth error:", error);
     const message = error instanceof Error ? error.message : "Unknown error";

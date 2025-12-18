@@ -79,64 +79,94 @@ export type Database = {
       }
       products_snapshot: {
         Row: {
-          created_at: string
-          date_created: string | null
           id: string
           item_id: string
-          my_notes: string | null
-          permalink: string | null
+          user_id: string
+          title: string
+          created_at: string
+          updated_at: string
+          // Campos Originais
           price: number | null
-          sales_last_30_days: number | null
+          permalink: string | null
+          thumbnail: string | null
           seller_sku: string | null
           status: string | null
+          date_created: string | null
+          sales_last_30_days: number | null
+          visits_last_30_days: number | null
+          my_notes: string | null
           strategic_action:
             | Database["public"]["Enums"]["strategic_action"]
             | null
-          thumbnail: string | null
-          title: string
-          updated_at: string
-          user_id: string
-          visits_last_30_days: number | null
+            
+          // --- NOVOS CAMPOS ADICIONADOS ---
+          sales_last_30_days_prev: number | null
+          cost_price: number | null
+          average_shipping_cost: number | null
+          custom_tax_rate: number | null
+          listing_type_id: string | null
+          health: number | null
+          logistic_type: string | null
         }
         Insert: {
-          created_at?: string
-          date_created?: string | null
           id?: string
           item_id: string
-          my_notes?: string | null
-          permalink?: string | null
+          user_id: string
+          title: string
+          created_at?: string
+          updated_at?: string
+          
           price?: number | null
-          sales_last_30_days?: number | null
+          permalink?: string | null
+          thumbnail?: string | null
           seller_sku?: string | null
           status?: string | null
+          date_created?: string | null
+          sales_last_30_days?: number | null
+          visits_last_30_days?: number | null
+          my_notes?: string | null
           strategic_action?:
             | Database["public"]["Enums"]["strategic_action"]
             | null
-          thumbnail?: string | null
-          title: string
-          updated_at?: string
-          user_id: string
-          visits_last_30_days?: number | null
+
+          // Novos campos no Insert
+          sales_last_30_days_prev?: number | null
+          cost_price?: number | null
+          average_shipping_cost?: number | null
+          custom_tax_rate?: number | null
+          listing_type_id?: string | null
+          health?: number | null
+          logistic_type?: string | null
         }
         Update: {
-          created_at?: string
-          date_created?: string | null
           id?: string
           item_id?: string
-          my_notes?: string | null
-          permalink?: string | null
+          user_id?: string
+          title?: string
+          created_at?: string
+          updated_at?: string
+          
           price?: number | null
-          sales_last_30_days?: number | null
+          permalink?: string | null
+          thumbnail?: string | null
           seller_sku?: string | null
           status?: string | null
+          date_created?: string | null
+          sales_last_30_days?: number | null
+          visits_last_30_days?: number | null
+          my_notes?: string | null
           strategic_action?:
             | Database["public"]["Enums"]["strategic_action"]
             | null
-          thumbnail?: string | null
-          title?: string
-          updated_at?: string
-          user_id?: string
-          visits_last_30_days?: number | null
+
+          // Novos campos no Update
+          sales_last_30_days_prev?: number | null
+          cost_price?: number | null
+          average_shipping_cost?: number | null
+          custom_tax_rate?: number | null
+          listing_type_id?: string | null
+          health?: number | null
+          logistic_type?: string | null
         }
         Relationships: []
       }
@@ -277,6 +307,7 @@ export type CompositeTypes<
     ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
     : never
 
+// Helper para facilitar o uso dos Enums no Front-end
 export const Constants = {
   public: {
     Enums: {

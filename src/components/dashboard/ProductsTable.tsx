@@ -16,12 +16,26 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { ExternalLink, StickyNote } from "lucide-react";
+import { 
+  ExternalLink, 
+  StickyNote, 
+  AlertTriangle, 
+  TrendingDown, 
+  Skull, 
+  Search, 
+  Wallet, 
+  Rocket, 
+  Truck, 
+  TrendingUp, 
+  CheckCircle 
+} from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { differenceInDays } from "date-fns";
 import ProductDetailModal from "./ProductDetailModal";
+import { calculateFinancials, getSmartDiagnosis, calculateConversion } from "@/lib/ad-calculations";
 
+// Interface alinhada com o banco de dados atualizado
 interface Product {
   id: string;
   item_id: string;
@@ -36,6 +50,14 @@ interface Product {
   strategic_action: string | null;
   my_notes: string | null;
   date_created: string | null;
+  // Novos campos (opcionais pois podem ser null no banco)
+  cost_price?: number;
+  average_shipping_cost?: number;
+  custom_tax_rate?: number;
+  listing_type_id?: string;
+  health?: number;
+  logistic_type?: string;
+  sales_last_30_days_prev?: number;
 }
 
 interface ProductsTableProps {
@@ -51,62 +73,15 @@ const strategicActions = [
   { value: "Ativar Ads", label: "Ativar Ads" },
 ];
 
-// Financial calculations (estimates based on available data)
-export const calculateFinancials = (product: Product) => {
-  const price = product.price || 0;
-  const sales = product.sales_last_30_days || 0;
-  const visits = product.visits_last_30_days || 0;
-  
-  // Revenue
-  const revenue = price * sales;
-  
-  // Estimated ad spend (assume R$0.50 per visit as average CPC)
-  const estimatedAdSpend = visits * 0.5;
-  
-  // ROAS = Revenue / Ad Spend
-  const roas = estimatedAdSpend > 0 ? revenue / estimatedAdSpend : 0;
-  
-  // Estimated margin (assume 30% product cost + 15% ML fees)
-  const productCost = price * 0.30;
-  const mlFees = price * 0.15;
-  const marginPerUnit = price - productCost - mlFees;
-  const totalMargin = marginPerUnit * sales - estimatedAdSpend;
-  const marginPercent = revenue > 0 ? (totalMargin / revenue) * 100 : 0;
-  
-  return {
-    revenue,
-    estimatedAdSpend,
-    roas,
-    totalMargin,
-    marginPercent,
-  };
-};
-
-// Get diagnosis based on financials
-export const getDiagnosis = (roas: number, marginPercent: number) => {
-  if (roas >= 3 && marginPercent >= 20) {
-    return { label: "Escalar", variant: "success" as const };
-  } else if (roas >= 1.5 && marginPercent >= 5) {
-    return { label: "Otimizar", variant: "warning" as const };
-  } else {
-    return { label: "Pausar", variant: "destructive" as const };
-  }
-};
-
 export default function ProductsTable({ products, loading, onUpdate }: ProductsTableProps) {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
-  const calculateConversion = (sales: number, visits: number) => {
-    if (visits === 0) return 0;
-    return (sales / visits) * 100;
-  };
-
   const getConversionClass = (conversion: number) => {
-    if (conversion < 0.5) return "conversion-low";
-    if (conversion > 2.0) return "conversion-high";
-    return "conversion-medium";
+    if (conversion < 0.5) return "text-red-500 font-medium";
+    if (conversion > 2.0) return "text-emerald-500 font-medium";
+    return "text-muted-foreground";
   };
 
   const isNewProduct = (dateCreated: string | null) => {
@@ -134,6 +109,7 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
 
   const handleRowClick = (product: Product, e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
+    // Evita abrir o modal se clicar em botões, links ou selects
     if (target.closest('button') || target.closest('a') || target.closest('[role="combobox"]')) {
       return;
     }
@@ -141,16 +117,27 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
     setModalOpen(true);
   };
 
+  // Helper para renderizar o ícone correto baseado na string retornada pela IA
+  const getDiagnosisIcon = (iconName: string) => {
+    switch (iconName) {
+      case "alert": return <AlertTriangle className="w-3 h-3 mr-1" />;
+      case "trend-down": return <TrendingDown className="w-3 h-3 mr-1" />;
+      case "skull": return <Skull className="w-3 h-3 mr-1" />;
+      case "search": return <Search className="w-3 h-3 mr-1" />;
+      case "wallet": return <Wallet className="w-3 h-3 mr-1" />;
+      case "rocket": return <Rocket className="w-3 h-3 mr-1" />;
+      case "truck": return <Truck className="w-3 h-3 mr-1" />;
+      case "trend-up": return <TrendingUp className="w-3 h-3 mr-1" />;
+      default: return <CheckCircle className="w-3 h-3 mr-1" />;
+    }
+  };
+
   if (loading) {
     return (
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="p-6">
-          <div className="h-6 w-48 bg-muted rounded animate-pulse mb-4" />
-          <div className="space-y-3">
-            {[1, 2, 3, 4, 5].map((i) => (
-              <div key={i} className="h-16 bg-muted/50 rounded animate-pulse" />
-            ))}
-          </div>
+      <div className="bg-card border border-border rounded-xl p-6 space-y-4">
+        <div className="h-8 w-48 bg-muted rounded animate-pulse" />
+        <div className="space-y-2">
+          {[1, 2, 3].map((i) => <div key={i} className="h-16 bg-muted/50 rounded animate-pulse" />)}
         </div>
       </div>
     );
@@ -165,110 +152,114 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
 
   return (
     <>
-      <div className="bg-card border border-border rounded-xl overflow-hidden animate-fade-in">
-        <div className="p-6 border-b border-border">
-          <h3 className="text-lg font-semibold">Análise de Anúncios</h3>
-          <p className="text-sm text-muted-foreground mt-1">
-            {products.length} produtos encontrados • Clique em uma linha para ver detalhes
-          </p>
-        </div>
+      <div className="bg-card border border-border rounded-xl overflow-hidden animate-fade-in shadow-sm">
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
-              <TableRow className="hover:bg-transparent">
+              <TableRow className="hover:bg-transparent bg-muted/30">
                 <TableHead className="w-[80px]">Imagem</TableHead>
-                <TableHead>Título</TableHead>
-                <TableHead>SKU</TableHead>
+                <TableHead>Produto</TableHead>
                 <TableHead className="text-right">Preço</TableHead>
-                <TableHead className="text-right">Vendas</TableHead>
-                <TableHead className="text-right">Conversão</TableHead>
-                <TableHead className="text-right">ROAS</TableHead>
+                <TableHead className="text-right">Vendas (30d)</TableHead>
+                <TableHead className="text-right">Conv.</TableHead>
                 <TableHead className="text-right">Margem</TableHead>
-                <TableHead className="text-center">Diagnóstico</TableHead>
-                <TableHead>Ação</TableHead>
+                <TableHead className="text-center">Diagnóstico IA</TableHead>
+                <TableHead>Ação Manual</TableHead>
                 <TableHead className="w-[50px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {Object.entries(groupedProducts).map(([sku, skuProducts]) =>
                 skuProducts.map((product, idx) => {
-                  const conversion = calculateConversion(
-                    product.sales_last_30_days,
-                    product.visits_last_30_days
-                  );
-                  const financials = calculateFinancials(product);
-                  const diagnosis = getDiagnosis(financials.roas, financials.marginPercent);
+                  // --- CÁLCULOS CENTRALIZADOS ---
+                  const conversion = calculateConversion(product.sales_last_30_days, product.visits_last_30_days);
+                  
+                  const financials = calculateFinancials({
+                    price: product.price,
+                    sales_last_30_days: product.sales_last_30_days,
+                    visits_last_30_days: product.visits_last_30_days,
+                    cost_price: product.cost_price,
+                    average_shipping_cost: product.average_shipping_cost,
+                    custom_tax_rate: product.custom_tax_rate,
+                    listing_type_id: product.listing_type_id
+                  });
+                  
+                  const diagnosis = getSmartDiagnosis({
+                    price: product.price,
+                    visits: product.visits_last_30_days,
+                    sales: product.sales_last_30_days,
+                    sales_prev: product.sales_last_30_days_prev || 0,
+                    marginPercent: financials.marginPercent,
+                    date_created: product.date_created,
+                    logistic_type: product.logistic_type || undefined,
+                    health: product.health || 0
+                  });
+                  // ------------------------------
+
                   const isFirst = idx === 0;
-                  const showSku = isFirst || sku === "sem-sku";
+                  const showSku = (isFirst || sku === "sem-sku") && product.seller_sku;
 
                   return (
                     <TableRow
                       key={product.id}
-                      className="table-row-hover cursor-pointer"
+                      className="group cursor-pointer hover:bg-muted/50 transition-colors"
                       onClick={(e) => handleRowClick(product, e)}
                     >
                       <TableCell>
-                        <div className="relative">
+                        <div className="relative w-12 h-12">
                           <img
                             src={product.thumbnail || "/placeholder.svg"}
                             alt={product.title}
-                            className="w-12 h-12 object-cover rounded-lg border border-border"
+                            className="w-full h-full object-cover rounded-md border border-border"
                           />
                           {isNewProduct(product.date_created) && (
-                            <span className="badge-new absolute -top-1 -right-1">Novo</span>
+                            <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-3 w-3 bg-sky-500"></span>
+                            </span>
                           )}
                         </div>
                       </TableCell>
                       <TableCell>
-                        <div className="max-w-[200px]">
-                          <p className="font-medium truncate" title={product.title}>
+                        <div className="flex flex-col max-w-[220px]">
+                          <span className="font-medium truncate text-sm" title={product.title}>
                             {product.title}
-                          </p>
-                          <p className="text-xs text-muted-foreground font-mono">
-                            {product.item_id}
-                          </p>
+                          </span>
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+                            <span className="font-mono">{product.item_id}</span>
+                            {showSku && (
+                              <span className="px-1.5 py-0.5 bg-secondary rounded font-mono text-[10px]">
+                                {product.seller_sku}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </TableCell>
-                      <TableCell>
-                        {showSku && product.seller_sku && (
-                          <span className="px-2 py-1 bg-secondary rounded text-xs font-mono">
-                            {product.seller_sku}
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right font-mono">
+                      <TableCell className="text-right font-mono text-sm">
                         R$ {product.price?.toFixed(2) || "0.00"}
                       </TableCell>
-                      <TableCell className="text-right font-mono">
-                        {product.sales_last_30_days || 0}
+                      <TableCell className="text-right">
+                        <div className="flex flex-col items-end">
+                          <span className="font-bold">{product.sales_last_30_days}</span>
+                          <span className="text-[10px] text-muted-foreground">{product.visits_last_30_days} visits</span>
+                        </div>
                       </TableCell>
-                      <TableCell className={cn("text-right font-mono", getConversionClass(conversion))}>
-                        {conversion.toFixed(2)}%
-                      </TableCell>
-                      <TableCell className={cn(
-                        "text-right font-mono font-bold",
-                        financials.roas >= 3 ? "text-emerald-400" : 
-                        financials.roas >= 1.5 ? "text-amber-400" : "text-red-400"
-                      )}>
-                        {financials.roas.toFixed(1)}x
+                      <TableCell className={cn("text-right font-mono text-xs", getConversionClass(conversion))}>
+                        {conversion.toFixed(1)}%
                       </TableCell>
                       <TableCell className={cn(
-                        "text-right font-mono font-bold",
-                        financials.marginPercent >= 20 ? "text-emerald-400" : 
-                        financials.marginPercent >= 5 ? "text-amber-400" : "text-red-400"
+                        "text-right font-mono font-bold text-sm",
+                        financials.marginPercent >= 20 ? "text-emerald-500" : 
+                        financials.marginPercent > 0 ? "text-amber-500" : "text-red-500"
                       )}>
-                        {financials.marginPercent.toFixed(1)}%
+                        {financials.marginPercent.toFixed(0)}%
                       </TableCell>
                       <TableCell className="text-center">
                         <Badge 
                           variant="outline"
-                          className={cn(
-                            "text-xs font-semibold",
-                            diagnosis.variant === "success" && "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
-                            diagnosis.variant === "warning" && "bg-amber-500/20 text-amber-400 border-amber-500/30",
-                            diagnosis.variant === "destructive" && "bg-red-500/20 text-red-400 border-red-500/30"
-                          )}
+                          className={cn("whitespace-nowrap font-normal border", diagnosis.color)}
                         >
+                          {getDiagnosisIcon(diagnosis.icon)}
                           {diagnosis.label}
                         </Badge>
                       </TableCell>
@@ -278,10 +269,10 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
                           onValueChange={(value) => handleActionChange(product.id, value)}
                           disabled={updatingId === product.id}
                         >
-                          <SelectTrigger className="w-[130px] bg-background">
-                            <SelectValue placeholder="Selecionar..." />
+                          <SelectTrigger className="w-[140px] h-8 bg-background text-xs">
+                            <SelectValue placeholder="Ação..." />
                           </SelectTrigger>
-                          <SelectContent className="bg-popover border-border">
+                          <SelectContent>
                             {strategicActions.map((action) => (
                               <SelectItem key={action.value} value={action.value}>
                                 {action.label}
@@ -291,19 +282,14 @@ export default function ProductsTable({ products, loading, onUpdate }: ProductsT
                         </Select>
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-1">
-                          {product.my_notes && (
-                            <span title={product.my_notes}>
-                              <StickyNote className="w-4 h-4 text-primary" />
-                            </span>
-                          )}
+                        <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {product.my_notes && <StickyNote className="w-4 h-4 text-amber-400" />}
                           <a
                             href={product.permalink}
                             target="_blank"
-                            rel="noopener noreferrer"
-                            className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-                            title="Ver no ML"
+                            rel="noreferrer"
                             onClick={(e) => e.stopPropagation()}
+                            className="text-muted-foreground hover:text-primary"
                           >
                             <ExternalLink className="w-4 h-4" />
                           </a>

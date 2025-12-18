@@ -10,6 +10,7 @@ import History from "./pages/History";
 import Integration from "./pages/Integration";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
+import Sales from "./pages/Sales";
 
 const queryClient = new QueryClient();
 
@@ -27,6 +28,7 @@ const App = () => (
           <Route path="/integration" element={<Integration />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<NotFound />} />
+          <Route path="/sales" element={<Sales />} />
         </Routes>
       </BrowserRouter>
     </TooltipProvider>

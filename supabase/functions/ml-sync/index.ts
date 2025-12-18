@@ -12,8 +12,6 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 async function refreshToken(supabase: any, integration: any) {
-  console.log("Refreshing access token...");
-
   const response = await fetch("https://api.mercadolibre.com/oauth/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -24,162 +22,112 @@ async function refreshToken(supabase: any, integration: any) {
       refresh_token: integration.refresh_token,
     }),
   });
-
   const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error("Failed to refresh token: " + data.message);
-  }
-
+  if (!response.ok) throw new Error("Erro token");
   const expiresAt = Math.floor(Date.now() / 1000) + data.expires_in;
-
-  await supabase
-    .from("integrations")
-    .update({
-      access_token: data.access_token,
-      refresh_token: data.refresh_token,
-      expires_at: expiresAt,
-    })
-    .eq("id", integration.id);
-
+  await supabase.from("integrations").update({ access_token: data.access_token, refresh_token: data.refresh_token, expires_at: expiresAt }).eq("id", integration.id);
   return data.access_token;
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-    // Get user from auth header
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      throw new Error("No authorization header");
-    }
-
+    if (!authHeader) throw new Error("No header");
     const token = authHeader.replace("Bearer ", "");
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser(token);
+    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !user) throw new Error("Invalid user");
 
-    if (userError || !user) {
-      throw new Error("Invalid user token");
-    }
+    const { data: integration, error: intError } = await supabase.from("integrations").select("*").eq("user_id", user.id).maybeSingle();
+    if (intError || !integration) throw new Error("Integration not found");
 
-    // Get integration
-    const { data: integration, error: integrationError } = await supabase
-      .from("integrations")
-      .select("*")
-      .eq("user_id", user.id)
-      .single();
-
-    if (integrationError || !integration) {
-      throw new Error("Integration not found. Please connect your Mercado Livre account.");
-    }
-
-    // Check if token is expired and refresh if needed
     let accessToken = integration.access_token;
-    if (integration.expires_at * 1000 < Date.now()) {
-      accessToken = await refreshToken(supabase, integration);
+    if ((integration.expires_at * 1000) - 300000 < Date.now()) { try { accessToken = await refreshToken(supabase, integration); } catch (e) {} }
+
+    let allIds: string[] = [];
+    let offset = 0;
+    const limit = 50;
+    let keepFetching = true;
+
+    while (keepFetching) {
+      const res = await fetch(`https://api.mercadolibre.com/users/${integration.seller_id}/items/search?limit=${limit}&offset=${offset}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const data = await res.json();
+      if (!data.results || data.results.length === 0) keepFetching = false;
+      else { allIds = [...allIds, ...data.results]; offset += limit; if (data.results.length < limit) keepFetching = false; }
+      if (allIds.length >= 2000) keepFetching = false;
     }
 
-    console.log("Fetching items from ML...");
+    if (allIds.length === 0) return new Response(JSON.stringify({ synced: 0 }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-    // Fetch user items from ML
-    const itemsResponse = await fetch(
-      `https://api.mercadolibre.com/users/${integration.seller_id}/items/search?status=active&limit=50`,
-      {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      }
-    );
+    console.log(`Atualizando ${allIds.length} produtos...`);
+    const productsToUpsert = [];
+    const BATCH_SIZE = 20;
 
-    const itemsData = await itemsResponse.json();
+    for (let i = 0; i < allIds.length; i += BATCH_SIZE) {
+      const chunk = allIds.slice(i, i + BATCH_SIZE);
+      const idsString = chunk.join(",");
+      
+      // CORREÇÃO AQUI: Adicionei 'attributes' na lista de campos pedidos
+      const dRes = await fetch(`https://api.mercadolibre.com/items?ids=${idsString}&attributes=id,title,price,permalink,thumbnail,seller_custom_field,status,sold_quantity,date_created,shipping,health,catalog_listing,listing_type_id,attributes`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const dData = await dRes.json();
 
-    if (!itemsResponse.ok) {
-      console.error("Items fetch error:", itemsData);
-      throw new Error("Failed to fetch items from Mercado Livre");
-    }
+      if (Array.isArray(dData)) {
+        const items = await Promise.all(dData.map(async (w: any) => {
+          if (w.code !== 200) return null;
+          const item = w.body;
+          
+          let visits = 0;
+          try {
+             const vRes = await fetch(`https://api.mercadolibre.com/items/${item.id}/visits/time_window?last=30&unit=day`, { headers: { Authorization: `Bearer ${accessToken}` } });
+             if (vRes.ok) { const vData = await vRes.json(); visits = vData.total_visits || 0; }
+          } catch (err) {}
 
-    console.log(`Found ${itemsData.results?.length || 0} items`);
-
-    if (!itemsData.results || itemsData.results.length === 0) {
-      return new Response(JSON.stringify({ synced: 0, message: "No active items found" }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    // Fetch details for each item
-    const itemIds = itemsData.results.join(",");
-    const detailsResponse = await fetch(
-      `https://api.mercadolibre.com/items?ids=${itemIds}`,
-      {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      }
-    );
-
-    const detailsData = await detailsResponse.json();
-
-    // Process and upsert items
-    const products = [];
-    for (const item of detailsData) {
-      if (item.code !== 200) continue;
-
-      const body = item.body;
-
-      // Fetch visits for this item
-      let visits = 0;
-      try {
-        const visitsResponse = await fetch(
-          `https://api.mercadolibre.com/items/${body.id}/visits/time_window?last=30&unit=day`,
-          {
-            headers: { Authorization: `Bearer ${accessToken}` },
+          // Lógica SKU Reforçada
+          let finalSku = item.seller_custom_field;
+          if (!finalSku && item.attributes) {
+              const skuAttr = item.attributes.find((a: any) => a.id === "SELLER_SKU");
+              if (skuAttr) finalSku = skuAttr.value_name;
           }
-        );
-        const visitsData = await visitsResponse.json();
-        visits = visitsData.total_visits || 0;
-      } catch (e) {
-        console.log(`Failed to fetch visits for ${body.id}:`, e);
+
+          return {
+            item_id: item.id,
+            user_id: user.id,
+            title: item.title,
+            price: item.price,
+            permalink: item.permalink,
+            thumbnail: item.thumbnail,
+            seller_sku: finalSku, // Agora vai preencher corretamente
+            status: item.status,
+            listing_type_id: item.listing_type_id,
+            sold_quantity_total: item.sold_quantity || 0, // Salva o total histórico
+            // sales_last_30_days: NÃO MEXER (Deixa o SQL calcular o real)
+            visits_last_30_days: visits,
+            
+            logistic_type: item.shipping?.logistic_type || null,
+            free_shipping: item.shipping?.free_shipping || false,
+            health: item.health || null,
+            catalog_listing: item.catalog_listing || false,
+            
+            date_created: item.date_created,
+            updated_at: new Date().toISOString(),
+          };
+        }));
+        productsToUpsert.push(...items.filter(i => i !== null));
       }
-
-      products.push({
-        item_id: body.id,
-        user_id: user.id,
-        title: body.title,
-        price: body.price,
-        permalink: body.permalink,
-        thumbnail: body.thumbnail,
-        seller_sku: body.seller_custom_field || null,
-        status: body.status,
-        visits_last_30_days: visits,
-        sales_last_30_days: body.sold_quantity || 0,
-        date_created: body.date_created,
-      });
     }
 
-    // Upsert products
-    const { error: upsertError } = await supabase.from("products_snapshot").upsert(products, {
-      onConflict: "item_id,user_id",
-    });
-
-    if (upsertError) {
-      console.error("Upsert error:", upsertError);
-      throw new Error("Failed to save products");
+    if (productsToUpsert.length > 0) {
+      const { error } = await supabase.from("products_snapshot").upsert(productsToUpsert, { onConflict: "item_id,user_id" });
+      if (error) throw error;
     }
+    
+    // Recalcula o real do mês
+    await supabase.rpc('update_real_sales_30d');
 
-    console.log(`Successfully synced ${products.length} products`);
-
-    return new Response(JSON.stringify({ synced: products.length }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  } catch (error: unknown) {
-    console.error("ML Sync error:", error);
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return new Response(JSON.stringify({ error: message }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(JSON.stringify({ success: true, synced: productsToUpsert.length }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  } catch (error: any) {
+    return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });
