@@ -3,6 +3,7 @@ import { differenceInDays } from "date-fns";
 // --- TIPAGEM ---
 interface FinancialInput {
   price: number;
+  salePrice?: number; // Campo novo para suportar preço de promoção/venda real
   sales_last_30_days: number;
   visits_last_30_days: number;
   cost_price?: number;
@@ -30,7 +31,12 @@ export const calculateConversion = (sales: number, visits: number) => {
 };
 
 export const calculateFinancials = (product: FinancialInput) => {
-  const price = Number(product.price) || 0;
+  // LÓGICA DE PREÇO: Se tiver salePrice (preço da venda real/promoção), usa ele.
+  // Caso contrário, usa o price normal (preço de lista).
+  const price = product.salePrice && product.salePrice > 0 
+    ? Number(product.salePrice) 
+    : (Number(product.price) || 0);
+  
   const sales = Number(product.sales_last_30_days) || 0;
   const visits = Number(product.visits_last_30_days) || 0;
   const cost = Number(product.cost_price) || 0;
@@ -39,40 +45,39 @@ export const calculateFinancials = (product: FinancialInput) => {
   const revenue = price * sales;
   
   // --- 1. CÁLCULO DE COMISSÃO (ML FEE) ---
-  // gold_pro = Premium (aprox 18%) | gold_special = Clássico (aprox 11-13%)
-  let taxRate = 0.12; // Média Clássico padrão
+  // gold_pro = Premium (aprox 16.5% a 19%)
+  // gold_special = Clássico (aprox 11.5% a 14%)
+  let taxRate = 0.115; // Valor base (Clássico)
   
   if (product.listing_type_id === 'gold_pro') {
-    taxRate = 0.18; // Média Premium
+    taxRate = 0.165; // Ajustado para refletir melhor o Premium (aprox 16.5%)
   } else if (product.listing_type_id === 'gold_special') {
-    taxRate = 0.12; 
+    taxRate = 0.115; 
   }
   
+  // Calcula a taxa do ML baseada no preço real da venda
   const mlFee = price * taxRate;
   
   // --- 2. TAXA FIXA (Para produtos abaixo de R$ 79) ---
-  // Nota: Isso pode variar por categoria/peso, mas R$ 6.00 é a regra geral
   let fixedFee = 0;
   if (price < 79) {
     fixedFee = 6.00;
   }
   
-  // --- 3. IMPOSTOS (SIMPLES NACIONAL) ---
-  // Prioriza o valor do banco. Se for 0 ou null, usa fallback de 6% (estimativa segura)
+  // --- 3. IMPOSTOS (SIMPLES NACIONAL / CUSTOMIZADO) ---
+  // Se o usuário definiu uma taxa manual no banco, usamos ela.
+  // Se não, usamos o fallback de 6% (estimativa Simples Nacional).
   let taxPercent = 0.06; 
   if (product.custom_tax_rate !== undefined && product.custom_tax_rate !== null) {
-      // Se vier 4 (inteiro), divide por 100. Se vier 0.04 (decimal), mantém.
-      // Se vier 0 exato, assumimos que o usuário quer 0% (ex: MEI) ou não configurou.
-      // Para segurança, se for 0, mantemos o fallback OU aceitamos 0 se você for MEI.
-      // AQUI: Vou assumir que se for > 0 usa o valor, se for 0 usa 6%.
       if (product.custom_tax_rate > 0) {
+        // Se o valor for > 1 (ex: 4), dividimos por 100. Se for decimal (ex: 0.04), mantemos.
         taxPercent = product.custom_tax_rate > 1 ? product.custom_tax_rate / 100 : product.custom_tax_rate;
       }
   }
   const taxes = price * taxPercent;
 
   // --- 4. CUSTO TOTAL UNITÁRIO ---
-  // Custo Produto + Comissão ML + Taxa Fixa ML + Imposto Gov + Frete Grátis (se houver)
+  // Custo Produto + Comissão ML + Taxa Fixa ML + Imposto + Frete
   const totalCostPerUnit = cost + mlFee + fixedFee + taxes + shipping;
   
   // --- 5. RESULTADOS ---
@@ -82,9 +87,7 @@ export const calculateFinancials = (product: FinancialInput) => {
   // Margem Percentual Real
   const marginPercent = price > 0 ? (marginPerUnit / price) * 100 : 0;
   
-  // ROAS (Estimado - Mantivemos separado para não sujar a margem)
-  // Se não temos o AdSpend real, assumimos 0 para não inventar prejuízo
-  // Se quiser simular, use: const estimatedAdSpend = visits * 0.10;
+  // ROAS (Estimado - Mantemos 0 por padrão para não distorcer se não houver dados de Ads)
   const estimatedAdSpend = 0; 
   const roas = estimatedAdSpend > 0 ? revenue / estimatedAdSpend : 0;
 
@@ -93,9 +96,10 @@ export const calculateFinancials = (product: FinancialInput) => {
     mlFee,
     taxes,
     totalCostPerUnit,
-    marginPercent, // Usado nos cards
+    marginPercent, 
     totalMargin,
-    taxRateUsed: (taxPercent * 100).toFixed(1)
+    taxRateUsed: (taxRate * 100).toFixed(1), // Retornamos qual taxa foi usada para exibir no front
+    priceUsed: price // Retornamos qual preço foi base do cálculo
   };
 };
 
@@ -106,7 +110,7 @@ export const getSmartDiagnosis = (product: DiagnosisInput) => {
   const daysActive = product.date_created ? differenceInDays(new Date(), new Date(product.date_created)) : 0;
   const health = product.health || 0; // 0 a 1
 
-  // Cálculo de Crescimento
+  // Cálculo de Crescimento (Growth)
   const growth = product.sales_prev > 0 
     ? ((product.sales - product.sales_prev) / product.sales_prev) * 100 
     : (product.sales > 0 ? 100 : 0);
@@ -123,7 +127,7 @@ export const getSmartDiagnosis = (product: DiagnosisInput) => {
     };
   }
 
-  // 2. Em Queda (Queda brusca > 40%)
+  // 2. Em Queda (Queda brusca > 40% nas vendas)
   if (product.sales_prev > 5 && growth < -40) {
     return { 
       label: "Em Queda", 
@@ -144,7 +148,6 @@ export const getSmartDiagnosis = (product: DiagnosisInput) => {
   }
 
   // 4. Margem Baixa (Vendendo, mas lucro < 8%)
-  // Cuidado: Só mostramos isso se houver vendas, para não alarmar produtos parados
   if (product.sales > 0 && product.marginPercent < 8) {
     return { 
       label: "Margem Baixa", 

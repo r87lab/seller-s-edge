@@ -6,131 +6,95 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const ML_APP_ID = Deno.env.get("ML_APP_ID");
-const ML_CLIENT_SECRET = Deno.env.get("ML_CLIENT_SECRET");
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
 serve(async (req) => {
-  // Handle CORS preflight requests
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    );
 
-    // Get the user from the auth header
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      throw new Error("No authorization header");
-    }
+    const body = await req.json();
+    const { action, code, redirectUri, accessToken, sellerId, limit, offset } = body;
+    const rawIds = body.ids || body.orderIds;
 
-    const token = authHeader.replace("Bearer ", "");
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser(token);
-
-    if (userError || !user) {
-      throw new Error("Invalid user token");
-    }
-
-    // ATUALIZAÇÃO: Adicionamos ids e accessToken na desestruturação
-    const { action, code, redirectUri, ids, accessToken } = await req.json();
-    console.log(`ML Auth action: ${action}`);
-
-    // --- AÇÃO 1: LOGIN ---
+    // 1. LOGIN (SIMPLES - AS PERMISSÕES VÊM DO PAINEL DO ML)
     if (action === "login") {
-      const authUrl = `https://auth.mercadolivre.com.br/authorization?response_type=code&client_id=${ML_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}`;
-
-      return new Response(JSON.stringify({ authUrl }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      const authUrl = `https://auth.mercadolivre.com.br/authorization?response_type=code&client_id=${Deno.env.get("ML_APP_ID")}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+      return new Response(JSON.stringify({ authUrl }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // --- AÇÃO 2: CALLBACK (Troca de token) ---
+    // 2. CALLBACK
     if (action === "callback") {
-      console.log("Exchanging code for tokens...");
-
       const tokenResponse = await fetch("https://api.mercadolibre.com/oauth/token", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           grant_type: "authorization_code",
-          client_id: ML_APP_ID!,
-          client_secret: ML_CLIENT_SECRET!,
+          client_id: Deno.env.get("ML_APP_ID")!,
+          client_secret: Deno.env.get("ML_CLIENT_SECRET")!,
           code,
           redirect_uri: redirectUri,
         }),
       });
-
       const tokenData = await tokenResponse.json();
-      console.log("Token response status:", tokenResponse.status);
+      if (!tokenResponse.ok) throw new Error(tokenData.message || "Token error");
 
-      if (!tokenResponse.ok) {
-        console.error("Token error:", tokenData);
-        throw new Error(tokenData.message || "Failed to get access token");
+      const authHeader = req.headers.get("Authorization");
+      const userReq = await supabase.auth.getUser(authHeader?.replace("Bearer ", "") || "");
+      if (userReq.data.user) {
+         await supabase.from("integrations").upsert({
+            user_id: userReq.data.user.id,
+            access_token: tokenData.access_token,
+            refresh_token: tokenData.refresh_token,
+            expires_at: Math.floor(Date.now() / 1000) + tokenData.expires_in,
+            seller_id: tokenData.user_id?.toString(),
+         }, { onConflict: "user_id" });
       }
-
-      const expiresAt = Math.floor(Date.now() / 1000) + tokenData.expires_in;
-
-      // Save integration to database
-      const { error: upsertError } = await supabase.from("integrations").upsert(
-        {
-          user_id: user.id,
-          access_token: tokenData.access_token,
-          refresh_token: tokenData.refresh_token,
-          expires_at: expiresAt,
-          seller_id: tokenData.user_id?.toString(),
-        },
-        { onConflict: "user_id" }
-      );
-
-      if (upsertError) {
-        console.error("Upsert error:", upsertError);
-        throw new Error("Failed to save integration");
-      }
-
-      console.log("Integration saved successfully");
-
-      return new Response(JSON.stringify({ success: true }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(JSON.stringify({ success: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // --- AÇÃO 3: CHECK ITEMS (A NOVA FUNCIONALIDADE PARA CORRIGIR O CORS) ---
-    if (action === "check_items") {
-        if (!ids || !accessToken) {
-            throw new Error("Missing required params: ids or accessToken");
-        }
+    // 3. GET SALES (Lista Rápida)
+    if (action === "get_sales") {
+        const searchLimit = limit ? Math.min(Number(limit), 500) : 50;
+        const searchOffset = offset ? Number(offset) : 0;
+        const mlResponse = await fetch(
+            `https://api.mercadolibre.com/orders/search?seller=${sellerId}&sort=date_desc&limit=${searchLimit}&offset=${searchOffset}`, 
+            { headers: { "Authorization": `Bearer ${accessToken}` } }
+        );
+        const data = await mlResponse.json();
+        return new Response(JSON.stringify(data), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
 
-        // Fazemos a chamada aqui no servidor (Deno), onde não existe CORS
-        const mlResponse = await fetch(`https://api.mercadolibre.com/items?ids=${ids}`, {
-            method: "GET",
-            headers: {
-                "Authorization": `Bearer ${accessToken}`,
-                "Content-Type": "application/json"
-            }
+    // 4. GET ORDERS DETAILED (A SOLUÇÃO DO PROBLEMA)
+    // Busca cada pedido individualmente para garantir que venha shipping.base_cost e marketplace_fee
+    if (action === "get_orders_detailed") {
+        if (!rawIds) throw new Error("IDs ausentes");
+
+        // Transforma string "123,456" em array ["123", "456"]
+        const idsArray = String(rawIds).split(',').map(id => id.trim()).filter(id => id);
+        
+        console.log(`[ML-AUTH] Buscando detalhes individuais para ${idsArray.length} pedidos...`);
+
+        // Dispara todas as requisições em paralelo (Metralhadora de fetch)
+        // Isso é muito rápido no servidor Edge
+        const promises = idsArray.map(async (id) => {
+            const res = await fetch(`https://api.mercadolibre.com/orders/${id}`, {
+                headers: { "Authorization": `Bearer ${accessToken}` }
+            });
+            return res.json();
         });
 
-        const mlData = await mlResponse.json();
-
-        // Devolvemos a resposta do ML para o seu Frontend
-        return new Response(JSON.stringify(mlData), {
-            status: mlResponse.status,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        const results = await Promise.all(promises);
+        
+        // Retorna o array de pedidos completos
+        return new Response(JSON.stringify(results), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     throw new Error("Invalid action");
 
-  } catch (error: unknown) {
-    console.error("ML Auth error:", error);
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return new Response(JSON.stringify({ error: message }), {
-      status: 400,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+  } catch (error: any) {
+    return new Response(JSON.stringify({ error: error.message }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });

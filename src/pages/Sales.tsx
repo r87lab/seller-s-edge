@@ -1,191 +1,189 @@
 import { useState, useEffect, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import DashboardLayout from "@/components/layout/DashboardLayout";
+// IMPORTANTE: Atualize os imports para as novas funções
+import { getStoredSales, syncSales, SaleOrder } from "@/services/salesService"; 
+import SalesChart from "@/components/dashboard/SalesChart";
 import { 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableHead, 
-  TableHeader, 
-  TableRow 
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow 
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import { 
-  format, 
-  subMonths, 
-  startOfMonth, 
-  endOfMonth, 
-  isWithinInterval, 
-  parseISO, 
-  getDate,
-  subDays
-} from "date-fns";
-import { ptBR } from "date-fns/locale";
-import { DollarSign, ShoppingBag, XCircle, TrendingUp, TrendingDown, Filter, CalendarRange, Package } from "lucide-react";
+  DollarSign, ShoppingBag, Filter, Calendar, RefreshCw, Wallet, Package, ArrowUpDown, Loader2 
+} from "lucide-react";
+import { format, parseISO } from "date-fns";
+import { toast } from "sonner"; // Assumindo que você usa sonner ou use-toast
 
-// Interfaces
-interface OrderItem {
-  item: {
-    id: string;
-    title: string;
-  };
-  quantity: number;
-  unit_price: number;
-}
-
-interface Order {
-  id: string;
-  ml_order_id: string;
-  total_amount: number;
-  date_created: string;
-  status: string;
-  items: OrderItem[];
-}
-
-interface ProductSnapshot {
-  item_id: string;
-  thumbnail: string;
-  title: string;
-}
+type SortConfig = { key: keyof SaleOrder | 'net_profit' | 'margin_percent' | 'date_created'; direction: 'asc' | 'desc' } | null;
 
 export default function Sales() {
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [productsMap, setProductsMap] = useState<Record<string, ProductSnapshot>>({});
-  const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [period, setPeriod] = useState("current_month");
+  const [orders, setOrders] = useState<SaleOrder[]>([]);
+  const [productImages, setProductImages] = useState<Record<string, string>>({});
+  
+  // Estados de Carregamento
+  const [loadingData, setLoadingData] = useState(true); // Carregando do Banco
+  const [isSyncing, setIsSyncing] = useState(false);    // Robô trabalhando
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  // Filtros
+  const [statusFilter, setStatusFilter] = useState("paid");
+  const [periodFilter, setPeriodFilter] = useState("30d");
 
-  const fetchData = async () => {
+  // Ordenação (Padrão: Data decrescente)
+  const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'date_created', direction: 'desc' });
+
+  // 1. FUNÇÃO DE LEITURA (Do Banco de Dados)
+  const loadData = async () => {
+    setLoadingData(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      // 1. Buscar Pedidos (90 dias) para histórico
-      const ninetyDaysAgo = subMonths(new Date(), 3).toISOString();
-      
-      // Usamos 'as any' para contornar a tipagem estrita do Supabase enquanto não atualizamos os tipos globais
-      const { data: ordersData, error: ordersError } = await supabase
-        .from("orders" as any)
-        .select("*")
-        .eq("user_id", user.id)
-        .gte("date_created", ninetyDaysAgo)
-        .order("date_created", { ascending: false });
-
-      if (ordersError) throw ordersError;
-
-      // 2. Buscar Produtos (Para pegar as FOTOS e Títulos bonitos)
-      const { data: productsData, error: productsError } = await supabase
-        .from("products_snapshot")
-        .select("item_id, thumbnail, title");
-      
-      if (productsError) console.error("Erro ao buscar fotos:", productsError);
-
-      // Criar mapa de produtos para acesso rápido: { "MLB123": { thumbnail: "..." } }
-      const pMap: Record<string, ProductSnapshot> = {};
-      if (productsData) {
-        productsData.forEach((p: any) => {
-          pMap[p.item_id] = p;
-        });
+      // Converte o filtro de texto para dias numéricos
+      let days = 30;
+      switch (periodFilter) {
+         case "7d": days = 7; break;
+         case "15d": days = 15; break;
+         case "30d": days = 30; break;
+         case "60d": days = 60; break;
+         case "90d": days = 90; break;
+         case "month": days = 30; break; // Simplificação, pode ajustar se quiser
+         default: days = 30;
       }
-      setProductsMap(pMap);
 
-      // Processar Pedidos
-      setOrders((ordersData as any[]).map(o => ({
-        id: o.id,
-        ml_order_id: o.ml_order_id,
-        total_amount: Number(o.total_amount),
-        date_created: o.date_created,
-        status: o.status,
-        items: o.items || []
-      })));
+      // Busca instantânea do Supabase
+      const salesData = await getStoredSales(days);
+      setOrders(salesData);
 
+      // Busca Imagens (Thumbnails) da tabela products_snapshot
+      const itemIds = salesData.map(o => o.items[0]?.id).filter(id => id);
+      if (itemIds.length > 0) {
+          const uniqueIds = [...new Set(itemIds)];
+          const { data: products } = await supabase
+            .from("products_snapshot")
+            .select("item_id, thumbnail")
+            .in("item_id", uniqueIds);
+          
+          const imgMap: Record<string, string> = {};
+          products?.forEach(p => { imgMap[p.item_id] = p.thumbnail });
+          setProductImages(imgMap);
+      }
     } catch (error) {
-      console.error("Erro geral:", error);
+      console.error("Erro ao carregar dados:", error);
+      toast.error("Erro ao carregar vendas.");
     } finally {
-      setLoading(false);
+      setLoadingData(false);
     }
   };
 
-  // --- LÓGICA DE DATAS E COMPARAÇÃO PROPORCIONAL ---
-  const dateRange = useMemo(() => {
-    const now = new Date();
-    let start: Date, end: Date, compareStart: Date, compareEnd: Date;
-    let label = "";
+  // 2. FUNÇÃO DE SINCRONIZAÇÃO (O Robô)
+  const handleSync = async () => {
+    setIsSyncing(true);
+    try {
+      // 1. Pega o Token
+      const { data: integration } = await supabase
+        .from("integrations")
+        .select("access_token, seller_id")
+        .maybeSingle();
 
-    switch (period) {
-      case "last_month":
-        start = startOfMonth(subMonths(now, 1));
-        end = endOfMonth(subMonths(now, 1));
-        compareStart = startOfMonth(subMonths(now, 2));
-        compareEnd = endOfMonth(subMonths(now, 2));
-        label = format(start, "MMMM", { locale: ptBR });
-        break;
-      case "last_30":
-        start = subDays(now, 30);
-        end = now;
-        compareStart = subDays(now, 60);
-        compareEnd = subDays(now, 31);
-        label = "Últimos 30 dias";
-        break;
-      case "current_month":
-      default:
-        start = startOfMonth(now);
-        end = endOfMonth(now);
-        compareStart = startOfMonth(subMonths(now, 1));
-        compareEnd = endOfMonth(subMonths(now, 1));
-        label = format(start, "MMMM", { locale: ptBR }); // ex: Dezembro
-        break;
-    }
-    return { start, end, compareStart, compareEnd, label };
-  }, [period]);
-
-  const metrics = useMemo(() => {
-    const now = new Date();
-    const currentDayOfMonth = getDate(now);
-
-    // Filtros de Data (Período Atual)
-    const currentOrders = orders.filter(o => 
-      o.status === 'paid' && 
-      isWithinInterval(parseISO(o.date_created), { start: dateRange.start, end: dateRange.end })
-    );
-
-    // Lógica Proporcional para Comparação (Ajuste para "Dia X vs Dia X")
-    const previousOrders = orders.filter(o => {
-      if (o.status !== 'paid') return false;
-      const orderDate = parseISO(o.date_created);
-      const inRange = isWithinInterval(orderDate, { start: dateRange.compareStart, end: dateRange.compareEnd });
-      
-      // Se estamos vendo o "Mês Atual", compare apenas até o mesmo dia do mês passado para não distorcer
-      if (period === "current_month" && inRange) {
-        return getDate(orderDate) <= currentDayOfMonth;
+      if (!integration?.access_token || !integration?.seller_id) {
+        toast.error("Integração não configurada.");
+        return;
       }
-      return inRange;
+
+      // 2. Dispara o Robô
+      toast.info("Sincronizando vendas e financeiro...");
+      await syncSales(integration.access_token, integration.seller_id, false); // false = sync rápida (últimas páginas)
+      
+      toast.success("Sincronização concluída!");
+      
+      // 3. Recarrega a tela com os dados novos
+      await loadData();
+
+    } catch (error) {
+      console.error("Erro na sincronização:", error);
+      toast.error("Falha ao sincronizar com Mercado Livre.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Recarrega sempre que mudar o filtro de período
+  useEffect(() => { loadData(); }, [periodFilter]);
+
+  // --- ORDENAÇÃO ---
+  const requestSort = (key: keyof SaleOrder | 'net_profit' | 'margin_percent' | 'date_created') => {
+    let direction: 'asc' | 'desc' = 'desc';
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'desc') {
+      direction = 'asc';
+    }
+    setSortConfig({ key, direction });
+  };
+
+  // --- FILTRAGEM + ORDENAÇÃO (Client Side) ---
+  const processedOrders = useMemo(() => {
+    let result = [...orders];
+
+    // 1. Filtro de Status
+    if (statusFilter !== "all") {
+      result = result.filter(o => o.status === statusFilter);
+    }
+
+    // 2. Ordenação
+    if (sortConfig) {
+      result.sort((a, b) => {
+        let valA: any = (a as any)[sortConfig.key];
+        let valB: any = (b as any)[sortConfig.key];
+        
+        // Acessa propriedades aninhadas se necessário (ex: shipping.cost seria complexo aqui, mantemos nível raiz)
+        // Se precisar ordenar por shipping, teria que achatar o objeto antes ou tratar aqui.
+        
+        if (sortConfig.key === 'date_created') {
+             valA = new Date(valA).getTime();
+             valB = new Date(valB).getTime();
+        } else {
+             valA = Number(valA || 0);
+             valB = Number(valB || 0);
+        }
+
+        if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
+        if (valA > valB) return sortConfig.direction === 'asc' ? 1 : -1;
+        return 0;
+      });
+    }
+
+    return result;
+  }, [orders, statusFilter, sortConfig]);
+
+  // --- KPIs ---
+  const metrics = useMemo(() => {
+    const revenue = processedOrders.reduce((acc, curr) => acc + curr.total_amount, 0);
+    const profit = processedOrders.reduce((acc, curr) => acc + (curr.net_profit || 0), 0);
+    const count = processedOrders.length;
+    const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
+    const ticket = count > 0 ? revenue / count : 0;
+
+    return { revenue, profit, count, margin, ticket };
+  }, [processedOrders]);
+
+  // --- GRÁFICO ---
+  const chartData = useMemo(() => {
+    const grouped: Record<string, { sales: number, count: number }> = {};
+    // Garante ordem cronológica
+    const chronological = [...processedOrders].sort((a,b) => new Date(a.date_created).getTime() - new Date(b.date_created).getTime());
+
+    chronological.forEach(order => {
+      const date = format(parseISO(order.date_created), "dd/MM");
+      if (!grouped[date]) grouped[date] = { sales: 0, count: 0 };
+      grouped[date].sales += order.total_amount;
+      grouped[date].count += 1;
     });
 
-    const currentRevenue = currentOrders.reduce((sum, o) => sum + o.total_amount, 0);
-    const previousRevenue = previousOrders.reduce((sum, o) => sum + o.total_amount, 0);
-    const growth = previousRevenue > 0 ? ((currentRevenue - previousRevenue) / previousRevenue) * 100 : 0;
-    
-    // Contar cancelados no período
-    const canceledCount = orders.filter(o => 
-      o.status === 'cancelled' &&
-      isWithinInterval(parseISO(o.date_created), { start: dateRange.start, end: dateRange.end })
-    ).length;
-
-    return { currentRevenue, previousRevenue, growth, currentCount: currentOrders.length, canceledCount };
-  }, [orders, dateRange, period]);
-
-  const filteredOrders = orders.filter(order => {
-    const matchesStatus = statusFilter === "all" ? true : order.status === statusFilter;
-    const matchesDate = isWithinInterval(parseISO(order.date_created), { start: dateRange.start, end: dateRange.end });
-    return matchesStatus && matchesDate;
-  });
+    return Object.keys(grouped).map(date => ({ 
+        date, 
+        sales: grouped[date].sales,
+        count: grouped[date].count 
+    }));
+  }, [processedOrders]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -195,166 +193,168 @@ export default function Sales() {
     }
   };
 
-  const translateStatus = (status: string) => {
-    const map: Record<string, string> = { paid: "Pago", cancelled: "Cancelado", pending: "Pendente" };
-    return map[status] || status;
-  };
-
   return (
     <DashboardLayout>
-      <div className="p-6 lg:p-8 space-y-8 animate-fade-in">
+      <div className="p-6 lg:p-8 space-y-6 animate-fade-in max-w-[1600px] mx-auto">
         
-        {/* BARRA DE CONTROLE (FILTROS) */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Relatório de Vendas</h1>
-            <p className="text-muted-foreground mt-1">Análise de performance e pedidos</p>
+            <h1 className="text-2xl font-bold tracking-tight">Raio-X Financeiro</h1>
+            <p className="text-muted-foreground mt-1">Análise de lucro real por pedido.</p>
           </div>
-          
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Filtro de Status */}
-            <div className="flex items-center gap-2 bg-card border border-border p-1 rounded-lg px-2">
-              <Filter className="w-4 h-4 text-muted-foreground" />
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-[140px] border-0 bg-transparent focus:ring-0 h-8">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
+          <Button onClick={handleSync} disabled={isSyncing} variant="default" className="w-full md:w-auto">
+            {isSyncing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+            {isSyncing ? "Sincronizando..." : "Atualizar ML"}
+          </Button>
+        </div>
+
+        {/* FILTROS */}
+        <div className="bg-card border rounded-xl p-4 flex flex-wrap gap-6 items-center shadow-sm">
+           <div className="flex flex-col gap-1.5">
+             <label className="text-xs font-medium text-muted-foreground flex items-center gap-1"><Filter className="w-3 h-3" /> Status</label>
+             <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="h-9 w-[150px] bg-background"><SelectValue /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="paid">Pagos (Aprovados)</SelectItem>
                   <SelectItem value="all">Todos</SelectItem>
-                  <SelectItem value="paid">Pagos</SelectItem>
                   <SelectItem value="cancelled">Cancelados</SelectItem>
                 </SelectContent>
-              </Select>
-            </div>
+             </Select>
+           </div>
 
-            {/* Filtro de Data */}
-            <div className="flex items-center gap-2 bg-card border border-border p-1 rounded-lg px-2">
-              <CalendarRange className="w-4 h-4 text-muted-foreground" />
-              <Select value={period} onValueChange={setPeriod}>
-                <SelectTrigger className="w-[160px] border-0 bg-transparent focus:ring-0 h-8">
-                  <SelectValue placeholder="Período" />
-                </SelectTrigger>
+           <div className="flex flex-col gap-1.5">
+             <label className="text-xs font-medium text-muted-foreground flex items-center gap-1"><Calendar className="w-3 h-3" /> Período</label>
+             <Select value={periodFilter} onValueChange={setPeriodFilter}>
+                <SelectTrigger className="h-9 w-[180px] bg-background"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="current_month">Este Mês</SelectItem>
-                  <SelectItem value="last_month">Mês Passado</SelectItem>
-                  <SelectItem value="last_30">Últimos 30 Dias</SelectItem>
+                  <SelectItem value="7d">Últimos 7 dias</SelectItem>
+                  <SelectItem value="15d">Últimos 15 dias</SelectItem>
+                  <SelectItem value="30d">Últimos 30 dias</SelectItem>
+                  <SelectItem value="60d">Últimos 60 dias</SelectItem>
+                  <SelectItem value="90d">Últimos 90 dias</SelectItem>
                 </SelectContent>
-              </Select>
-            </div>
-          </div>
+             </Select>
+           </div>
+           
+           <div className="hidden md:flex flex-1 justify-end gap-6 text-sm">
+             <div><span className="text-muted-foreground">Vendas:</span><span className="ml-2 font-bold">{metrics.count}</span></div>
+             <div><span className="text-muted-foreground">Margem:</span><span className={`ml-2 font-bold ${metrics.margin > 15 ? "text-emerald-600" : "text-amber-600"}`}>{metrics.margin.toFixed(1)}%</span></div>
+           </div>
         </div>
 
-        {/* CARDS */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* KPIs */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Faturamento ({dateRange.label})</CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">Faturamento Real</CardTitle>
               <DollarSign className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">R$ {metrics.currentRevenue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
-              <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                {metrics.growth >= 0 ? <TrendingUp className="w-3 h-3 text-emerald-500" /> : <TrendingDown className="w-3 h-3 text-red-500" />}
-                <span className={metrics.growth >= 0 ? "text-emerald-500 font-medium" : "text-red-500 font-medium"}>
-                  {Math.abs(metrics.growth).toFixed(1)}%
-                </span>
-                vs período anterior
-              </p>
-            </CardContent>
+            <CardContent><div className="text-2xl font-bold">R$ {metrics.revenue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div></CardContent>
           </Card>
-
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Vendas Confirmadas</CardTitle>
-              <ShoppingBag className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm font-medium text-muted-foreground">Lucro Líquido</CardTitle>
+              <Wallet className="h-4 w-4 text-emerald-500" />
             </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{metrics.currentCount}</div>
-              <p className="text-xs text-muted-foreground mt-1">Pedidos pagos no período</p>
-            </CardContent>
+            <CardContent><div className={`text-2xl font-bold ${metrics.profit >= 0 ? "text-emerald-600" : "text-red-600"}`}>R$ {metrics.profit.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div></CardContent>
           </Card>
-
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Cancelamentos</CardTitle>
-              <XCircle className="h-4 w-4 text-red-400" />
+              <CardTitle className="text-sm font-medium text-muted-foreground">Ticket Médio</CardTitle>
+              <ShoppingBag className="h-4 w-4 text-blue-500" />
             </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-red-500">{metrics.canceledCount}</div>
-              <p className="text-xs text-muted-foreground mt-1">Pedidos perdidos no período</p>
-            </CardContent>
+            <CardContent><div className="text-2xl font-bold text-blue-600">R$ {metrics.ticket.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</div></CardContent>
           </Card>
         </div>
 
-        {/* TABELA DETALHADA COM FOTOS */}
+        {/* GRÁFICO */}
+        <SalesChart data={chartData} loading={loadingData} />
+
+        {/* TABELA */}
         <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
           <div className="overflow-x-auto">
             <Table>
               <TableHeader className="bg-muted/30">
                 <TableRow>
-                  <TableHead className="w-[100px]">Data</TableHead>
-                  <TableHead>Produto Vendido</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Valor Total</TableHead>
+                  <TableHead className="w-[100px] cursor-pointer hover:bg-muted/50" onClick={() => requestSort('date_created')}>
+                      <div className="flex items-center gap-1">Data <ArrowUpDown className="w-3 h-3" /></div>
+                  </TableHead>
+                  <TableHead>Produto</TableHead>
+                  
+                  <TableHead className="text-right cursor-pointer hover:bg-muted/50" onClick={() => requestSort('total_amount')}>
+                    <div className="flex items-center justify-end gap-1">Venda <ArrowUpDown className="w-3 h-3" /></div>
+                  </TableHead>
+                  
+                  <TableHead className="text-right text-red-500">Taxas ML</TableHead>
+                  <TableHead className="text-right text-red-500">Envio</TableHead>
+                  <TableHead className="text-right text-amber-600">Custo</TableHead>
+                  
+                  <TableHead className="text-right cursor-pointer hover:bg-muted/50" onClick={() => requestSort('net_profit')}>
+                     <div className="flex items-center justify-end gap-1">Lucro <ArrowUpDown className="w-3 h-3" /></div>
+                  </TableHead>
+
+                  <TableHead className="text-right cursor-pointer hover:bg-muted/50" onClick={() => requestSort('margin_percent')}>
+                     <div className="flex items-center justify-end gap-1">Margem <ArrowUpDown className="w-3 h-3" /></div>
+                  </TableHead>
+
+                  <TableHead className="text-center">Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {loading ? (
-                  <TableRow><TableCell colSpan={4} className="text-center h-24 text-muted-foreground">Carregando...</TableCell></TableRow>
-                ) : filteredOrders.length === 0 ? (
-                  <TableRow><TableCell colSpan={4} className="text-center h-24 text-muted-foreground">Nenhum pedido encontrado.</TableCell></TableRow>
+                {loadingData ? (
+                  <TableRow><TableCell colSpan={9} className="text-center h-32 text-muted-foreground">
+                    <div className="flex items-center justify-center gap-2"><Loader2 className="animate-spin w-5 h-5"/> Carregando dados do banco...</div>
+                  </TableCell></TableRow>
+                ) : processedOrders.length === 0 ? (
+                  <TableRow><TableCell colSpan={9} className="text-center h-32 text-muted-foreground">Nenhuma venda encontrada para o período.</TableCell></TableRow>
                 ) : (
-                  filteredOrders.map((order) => {
-                    const mainItem = order.items?.[0];
-                    // Truque: Tenta pegar a foto do banco de produtos, se não tiver, tenta do pedido, se não, ícone.
-                    const productSnapshot = mainItem ? productsMap[mainItem.item.id] : null;
-                    const thumbnail = productSnapshot?.thumbnail || null;
-                    const title = productSnapshot?.title || mainItem?.item.title || "Produto desconhecido";
+                  processedOrders.map((order) => {
+                    // Tenta pegar imagem do primeiro item
+                    const itemId = order.items[0]?.id;
+                    const thumb = itemId ? productImages[itemId] : null;
+                    
+                    // Valores Seguros
+                    const fees = order.payments?.[0]?.marketplace_fee || 0;
+                    const shipping = order.shipping?.cost || 0;
+                    const cost = order.unit_cost || 0;
+                    const profit = order.net_profit || 0;
 
                     return (
-                      <TableRow key={order.id} className="hover:bg-muted/50">
+                        <TableRow key={order.id} className="hover:bg-muted/50 group">
                         <TableCell>
-                          <div className="flex flex-col">
-                            <span className="font-mono text-sm">{format(parseISO(order.date_created), "dd/MM")}</span>
+                            <div className="flex flex-col">
+                            <span className="font-mono text-sm font-medium">{format(parseISO(order.date_created), "dd/MM")}</span>
                             <span className="text-[10px] text-muted-foreground">{format(parseISO(order.date_created), "HH:mm")}</span>
-                          </div>
-                        </TableCell>
-                        
-                        <TableCell>
-                          {mainItem ? (
-                            <div className="flex items-center gap-3">
-                              <div className="w-10 h-10 rounded bg-white border border-border flex-shrink-0 overflow-hidden flex items-center justify-center">
-                                {thumbnail ? (
-                                  <img src={thumbnail} alt="" className="w-full h-full object-contain" />
-                                ) : (
-                                  <Package className="w-5 h-5 text-muted-foreground/50" />
-                                )}
-                              </div>
-                              <div className="flex flex-col max-w-[300px]">
-                                <span className="font-medium text-sm truncate" title={title}>
-                                  {title}
-                                </span>
-                                <div className="flex gap-2 text-xs text-muted-foreground">
-                                  <span className="font-mono">ID: {order.ml_order_id}</span>
-                                  {mainItem.quantity > 1 && <span className="text-foreground font-bold">x{mainItem.quantity}</span>}
-                                </div>
-                              </div>
                             </div>
-                          ) : (
-                            <span className="text-muted-foreground italic text-sm">Detalhes indisponíveis</span>
-                          )}
                         </TableCell>
-
                         <TableCell>
-                          <Badge variant="outline" className={`font-normal text-xs ${getStatusColor(order.status)}`}>
-                            {translateStatus(order.status)}
-                          </Badge>
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded bg-white border border-border flex-shrink-0 overflow-hidden flex items-center justify-center p-0.5">
+                                    {thumb ? <img src={thumb} alt="" className="w-full h-full object-contain" /> : <Package className="w-5 h-5 text-muted-foreground/30" />}
+                                </div>
+                                <div className="flex flex-col max-w-[220px]">
+                                    <span className="font-medium text-sm truncate" title={order.items[0]?.title}>{order.items[0]?.title || "Item Desconhecido"}</span>
+                                    <div className="flex gap-2 text-xs text-muted-foreground">
+                                        <span className="font-mono opacity-70">#{order.id}</span>
+                                        {order.items[0]?.quantity > 1 && <span className="text-foreground font-bold bg-secondary px-1 rounded">x{order.items[0].quantity}</span>}
+                                    </div>
+                                </div>
+                            </div>
                         </TableCell>
-                        
-                        <TableCell className="text-right font-medium text-sm font-mono">
-                          R$ {order.total_amount.toFixed(2)}
+                        <TableCell className="text-right font-medium text-sm">R$ {order.total_amount.toFixed(2)}</TableCell>
+                        <TableCell className="text-right text-red-500 text-xs font-mono">- {fees.toFixed(2)}</TableCell>
+                        <TableCell className="text-right text-red-500 text-xs font-mono">- {shipping.toFixed(2)}</TableCell>
+                        <TableCell className="text-right text-amber-600 text-xs font-mono">- {cost.toFixed(2)}</TableCell>
+                        <TableCell className="text-right">
+                            <div className={`font-bold text-sm ${profit > 0 ? "text-emerald-600" : "text-red-600"}`}>R$ {profit.toFixed(2)}</div>
                         </TableCell>
-                      </TableRow>
+                        <TableCell className="text-right">
+                            <div className={`text-[10px] font-medium ${order.margin_percent && order.margin_percent > 15 ? "text-emerald-600" : "text-amber-600"}`}>{order.margin_percent?.toFixed(1)}%</div>
+                        </TableCell>
+                        <TableCell className="text-center">
+                            <Badge variant="outline" className={`font-normal text-xs ${getStatusColor(order.status)}`}>{order.status === 'paid' ? 'Pago' : order.status}</Badge>
+                        </TableCell>
+                        </TableRow>
                     );
                   })
                 )}

@@ -11,6 +11,7 @@ import Integration from "./pages/Integration";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 import Sales from "./pages/Sales";
+import Debug from "./pages/Debug"; //EXCLUIR DEPOIS
 
 const queryClient = new QueryClient();
 
@@ -29,6 +30,7 @@ const App = () => (
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<NotFound />} />
           <Route path="/sales" element={<Sales />} />
+          <Route path="/debug" element={<Debug />} /> {/* EXCLUIR */}
         </Routes>
       </BrowserRouter>
     </TooltipProvider>
