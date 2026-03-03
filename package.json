@@ -9,7 +9,7 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "tunnel": "ssh -R vipo-meli-app:80:127.0.0.1:8080 serveo.net",
+    "tunnel": "ssh -o ServerAliveInterval=60 -R vipo-meli-app:80:127.0.0.1:8080 serveo.net",
     "start": "concurrently -n \"SITE,TUNEL\" -c \"green,blue\" \"npm run dev\" \"npm run tunnel\""
   },
   "dependencies": {
